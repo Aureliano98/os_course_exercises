@@ -20,27 +20,57 @@ NOTICE
 
 1. X86有几个特权级？
 
+	4
 
 2. 不同特权级有什么区别？
 
+	特权级数字越小权限越高，ring 0能使用特权指令；相同指令在不同特权级能访问的数据范围和行为不同。
 
 3. 请说明CPL、DPL和RPL在中断响应、函数调用和指令执行时的作用。
 
+	* 中断响应要求：CPL <= DPL(门) and CPL >= DPL(段)
+	* 指令执行
+		* 特权指令只能在 ring 0 执行
+		* 访存
+			* 数据段: max(CPL, RPL) <= DPL 
+			* 栈段: CPL=RPL=DPL
+			* 代码段：略（不常见，参见[https://pdos.csail.mit.edu/6.828/2007/readings/i386/s06_03.htm](https://pdos.csail.mit.edu/6.828/2007/readings/i386/s06_03.htm) "Accessing Data in Code Segments"）
+		* I/O指令：允许 iff CPL < IOPL or TSS中的I/O port permissions中相应位设1 
+	* 跳转
+		* near jmp / call / ret：无作用
+		* far jmp / call（通过另一个段的描述符/通过call gate）：(a) 目标段DPL = CPL 或 (b) 目标段描述符的conforming bit设为1，且目标DPL <= CPL
 
 4. 写一个示例程序，完成4个特权级间的函数调用和数据访问时特权级控制的作用。
 
 ### 7.2 了解特权级切换过程
 
 1. 一条指令在执行时会有哪些可能的特权级判断？
+	
+	* 特权指令，是否在ring 0
+	* 访存，比较CPL, RPL, DPL
+	* 中断指令，比较CPL, DPL
+	* I/O指令，比较CPL与IOPL（可能还有TSS中的I/O port permissions）
+
+	具体规则参见7.1第3问。
+
 2. 在什么情况下会出现特权级切换？
+
+	* Interrupt / Trap gates
+	* 跳转到非一致代码段
 
 3. int指令在ring0和ring3的执行行为有什么不同？
 
+	ring 0时会额外push ss和esp（ss在高地址），ring 3不会。
 
 4. 如何利用int和iret指令完成不同特权级的切换？
 
+	主动`int`，在ISR中更改栈的内容，如加上（ring 0 to 3）或者删去（ring 3 to 0）ss, esp，更改eflags，段寄存器等，`iret`时硬件切换特权级。
 
 5. TSS和Task Register的作用是什么？
+	* 保存ring 0 - 2的ss和esp，中断发生时用这些值更新ss, esp，从而内核可以适用与用户不同的栈
+	* I/O port permissions, 以bitmap的形式存储当前task是否允许访问的I/O ports. 如果I/O指令CPL > IOPL，则会查该bitmap，bitmap显示没有权限才会产生general protection fault.
+	* 保存寄存器值，用于task切换（如iret之后硬件恢复寄存器值；Linux, Windows不用该功能，软件实现任务切换）
+	* Previous Task Link，只用于硬件task切换
 
  > [Task state segment](https://en.wikipedia.org/wiki/Task_state_segment)
 
@@ -49,13 +79,36 @@ NOTICE
 ### 7.3 了解段/页表
 
 1. 一条指令执行时最多会出现多少次地址转换？
+	
+	不知道。
+	* x86一般指令可以有0-2次访存（2次如`movs`系列指令），但实际上有更多的比如`pushal`，`int`都向栈中压了多个操作数，不清楚微指令层到底访问多少次
+	* 如果引发异常，例如缺页异常，会额外执行很多指令，算几次地址转换有待定义
+	* 一些字符串操作指令如`repne`带一个指令的，算几次地址转换有待定义
+ 
 2. 描述X86-32的MMU地址转换过程；
+
+	段机制将逻辑地址转化为线性地址，如果开启页机制再转化为物理地址，否则线性地址等于物理地址。X86-32使用两级页表。
 
 ### 7.4 了解UCORE建立段/页表
 
 1. 分析MMU的使能过程，尽可能详细地分析在执行进入保护械的代码“movl %eax, %cr0 ; ljmp $CODE_SEL, $0x0”时，CPU的状态和寄存器内容的变化。
 
+
+	鉴于`labcodes`和`labcodes`中都没有`ljmp $CODE_SEL, $0x0`这条语句，下面分析lab2 MMU的初步设置。
+	首先加载了一个自映射的页目录表
+
+	    # load pa of boot pgdir
+    	movl $REALLOC(__boot_pgdir), %eax
+    	movl %eax, %cr3
+
+	然后操作`cr0`的位，其中`CR0_PE`开启保护模式，`CR0_PG`开启页机制。
+	
+	    orl $(CR0_PE | CR0_PG | CR0_AM | CR0_WP | CR0_NE | CR0_TS | CR0_EM | CR0_MP), %eax
+    	andl $~(CR0_TS | CR0_EM), %eax
+
 2. 分析页表的建立过程；
+
+	见“个人思考题”第2问。
 
 ## 个人思考题
 
@@ -70,6 +123,14 @@ x86保护模式中权限管理无处不在，下面哪些时候要检查访问�
 
 请描述ucore OS建立页机制的准备工作包括哪些步骤？ \(w4l1\)
 
+汇编代码中
+
+* 打开A20 gate, 加载GDT，将cr0 CR0_PE_ON位置1，进入保护模式并开启段机制
+* 初步设置一个自映射的页目录表/页表，将页目录表起始地址存入cr3, 并置cr0的CR0_PG位，得到一个临时的页机制
+
+后续C代码中
+
+* 后续根据物理内存分布信息和使用情况，完善段表和页表，
 
 ## 小组思考题
 
@@ -148,7 +209,22 @@ va 0xce6c3f32, pa 0x007d4f32
 va 0xcd82c07c, pa 0x0c20907c, pde_idx 0x00000336, pde_ctx  0x00037003, pte_idx 0x0000002c, pte_ctx  0x0000c20b
 ```
 >> 注意：上述参考输出只是表示了正确的格式，其数值并不正确。
+
 ---
+
+答：见`pt32.py`。输出如下。
+
+	va 0xc2265b1f, pa 0x0d8f1b1f, pde_idx 0x00000308, pde_ctx 0x00000009, pte_idx 0x00000265, pte_ctx 0x0d8f1004
+	va 0xcc386bbc, pa 0x0414cbbc, pde_idx 0x00000330, pde_ctx 0x00000031, pte_idx 0x00000386, pte_ctx 0x0414c004
+	va 0xc7ed4d57, pa 0x07311d57, pde_idx 0x0000031f, pde_ctx 0x00000020, pte_idx 0x000002d4, pte_ctx 0x07311004
+	va 0xca6cecc0, pa 0x0c9e9cc0, pde_idx 0x00000329, pde_ctx 0x0000002a, pte_idx 0x000002ce, pte_ctx 0x0c9e9004
+	va 0xc18072e8, pa 0x007412e8, pde_idx 0x00000306, pde_ctx 0x00000007, pte_idx 0x00000007, pte_ctx 0x00741004
+	va 0xcd5f4b3a, pa 0x06ec9b3a, pde_idx 0x00000335, pde_ctx 0x00000036, pte_idx 0x000001f4, pte_ctx 0x06ec9004
+	va 0xcc324c99, pa 0x0008ac99, pde_idx 0x00000330, pde_ctx 0x00000031, pte_idx 0x00000324, pte_ctx 0x0008a004
+	va 0xc7204e52, pa 0x0b8b6e52, pde_idx 0x0000031c, pde_ctx 0x0000001d, pte_idx 0x00000204, pte_ctx 0x0b8b6004
+	va 0xc3a90293, pa 0x0f1fd293, pde_idx 0x0000030e, pde_ctx 0x0000000f, pte_idx 0x00000290, pte_ctx 0x0f1fd004
+	va 0xce6c3f32, pa 0x007d4f32, pde_idx 0x00000339, pde_ctx 0x0000003a, pte_idx 0x000002c3, pte_ctx 0x007d4004
+
 (5) 尝试在内存为256字节的OP-CPU机器上，设计一个支持自映射的内存空间部局。说明其页表起始逻辑地址、一级和二级虚拟地址计算公式。
 
 ## 开放思考题
@@ -163,7 +239,16 @@ va 0xcd82c07c, pa 0x0c20907c, pde_idx 0x00000336, pde_ctx  0x00037003, pte_idx 0
 ## 页表自映射机制思考题
 
 1. (easy) 自映射的目的是什么？它相比线性映射的好处、不足是什么？
+	
+	页目录表无需额外分配单独的存储空间。
+	* 好处：节省4KB页目录空间
+	* 不足：需要页目录表、页表规格相同
+
 2. (easy) Linux和Windows分别采用哪种映射机制（线性映射or自映射）？它们的选择背后有什么原因吗？
+	* Windows：自映射
+	* Linux：线性映射
+
+	不清楚历史原因，一个解读见[https://blog.csdn.net/dog250/article/details/5302756]().
 
 以下为optional：
 
