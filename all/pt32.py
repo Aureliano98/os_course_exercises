@@ -13,7 +13,7 @@ class PageTableStage:
 
     def get_entry(self, base, idx):
         if 0x300 <= idx <= 0x363:
-            return idx - 0x300 + 1
+            return self.make_entry((idx - 0x300 + 1) << 12, True, True)
         raise KeyError('Unknown entry for index {:#010x}'.format(idx))
 
     def next_base(self, entry):
@@ -26,7 +26,7 @@ class PageTableStage:
         return (entry >> 1) & 1
 
     def make_entry(self, next_base, writable, valid):
-        return next_base + (3 if writable else 0) + (1 if valid else 0)
+        return next_base + (2 if writable else 0) + (1 if valid else 0)
 
 def translate(vaddr, paddr, pdbr):
     pdt = PageTableStage(None, lambda vaddr: vaddr >> 22)
