@@ -60,7 +60,7 @@ NOTICE
 
 3. int指令在ring0和ring3的执行行为有什么不同？
 
-	ring 0时会额外push ss和esp（ss在高地址），ring 3不会。
+	ring 3时会额外push ss和esp（ss在高地址），ring 0不会。
 
 4. 如何利用int和iret指令完成不同特权级的切换？
 
@@ -84,7 +84,7 @@ NOTICE
 	* x86一般指令可以有0-2次访存（2次如`movs`系列指令），但实际上有更多的比如`pushal`，`int`都向栈中压了多个操作数，不清楚微指令层到底访问多少次
 	* 如果引发异常，例如缺页异常，会额外执行很多指令，算几次地址转换有待定义
 	* 一些字符串操作指令如`repne`带一个指令的，算几次地址转换有待定义
- 
+
 2. 描述X86-32的MMU地址转换过程；
 
 	段机制将逻辑地址转化为线性地址，如果开启页机制再转化为物理地址，否则线性地址等于物理地址。X86-32使用两级页表。
@@ -96,15 +96,15 @@ NOTICE
 
 	鉴于`labcodes`和`labcodes`中都没有`ljmp $CODE_SEL, $0x0`这条语句，下面分析lab2 MMU的初步设置。
 	首先加载了一个自映射的页目录表
-
+	
 	    # load pa of boot pgdir
-    	movl $REALLOC(__boot_pgdir), %eax
-    	movl %eax, %cr3
-
+		movl $REALLOC(__boot_pgdir), %eax
+		movl %eax, %cr3
+	
 	然后操作`cr0`的位，其中`CR0_PE`开启保护模式，`CR0_PG`开启页机制。
 	
 	    orl $(CR0_PE | CR0_PG | CR0_AM | CR0_WP | CR0_NE | CR0_TS | CR0_EM | CR0_MP), %eax
-    	andl $~(CR0_TS | CR0_EM), %eax
+		andl $~(CR0_TS | CR0_EM), %eax
 
 2. 分析页表的建立过程；
 
